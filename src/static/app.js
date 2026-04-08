@@ -3,8 +3,60 @@ document.addEventListener("DOMContentLoaded", () => {
   const activitySelect = document.getElementById("activity");
   const signupForm = document.getElementById("signup-form");
   const messageDiv = document.getElementById("message");
+  const loginForm = document.getElementById("login-form");
+  const logoutBtn = document.getElementById("logout-btn");
+  const authMessageDiv = document.getElementById("auth-message");
+  const loginEmailInput = document.getElementById("login-email");
+  const loginPasswordInput = document.getElementById("login-password");
 
-  // Function to fetch activities from API
+  const tokenKey = "activityToken";
+  const userEmailKey = "activityUserEmail";
+  let token = localStorage.getItem(tokenKey);
+
+  function getAuthHeaders(isJson = false) {
+    const headers = {};
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    if (isJson) {
+      headers["Content-Type"] = "application/json";
+    }
+    return headers;
+  }
+
+  function showAuthMessage(text, type = "info") {
+    authMessageDiv.textContent = text;
+    authMessageDiv.className = `message ${type}`;
+    authMessageDiv.classList.remove("hidden");
+    setTimeout(() => {
+      authMessageDiv.classList.add("hidden");
+    }, 5000);
+  }
+
+  function updateAuthUI() {
+    const isLoggedIn = !!token;
+    loginForm.classList.toggle("hidden", isLoggedIn);
+    logoutBtn.classList.toggle("hidden", !isLoggedIn);
+
+    if (isLoggedIn) {
+      const savedEmail = localStorage.getItem(userEmailKey);
+      if (savedEmail) {
+        authMessageDiv.textContent = `Logged in as ${savedEmail}`;
+        authMessageDiv.className = "message info";
+        authMessageDiv.classList.remove("hidden");
+      }
+    } else {
+      authMessageDiv.classList.add("hidden");
+    }
+  }
+
+  function clearAuthState() {
+    token = null;
+    localStorage.removeItem(tokenKey);
+    localStorage.removeItem(userEmailKey);
+    updateAuthUI();
+  }
+
   async function fetchActivities() {
     try {
       const response = await fetch("/activities");
@@ -12,6 +64,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Clear loading message
       activitiesList.innerHTML = "";
+      activitySelect.innerHTML = '<option value="">-- Select an activity --</option>';
 
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
@@ -73,6 +126,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const activity = button.getAttribute("data-activity");
     const email = button.getAttribute("data-email");
 
+    if (!token) {
+      showAuthMessage("Please log in before unregistering.", "error");
+      return;
+    }
+
     try {
       const response = await fetch(
         `/activities/${encodeURIComponent(
@@ -80,6 +138,7 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/unregister?email=${encodeURIComponent(email)}`,
         {
           method: "DELETE",
+          headers: getAuthHeaders()
         }
       );
 
@@ -92,6 +151,10 @@ document.addEventListener("DOMContentLoaded", () => {
         // Refresh activities list to show updated participants
         fetchActivities();
       } else {
+        if (response.status === 401 || response.status === 403) {
+          clearAuthState();
+          showAuthMessage("Authentication failed. Please log in again.", "error");
+        }
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
       }
@@ -114,6 +177,11 @@ document.addEventListener("DOMContentLoaded", () => {
   signupForm.addEventListener("submit", async (event) => {
     event.preventDefault();
 
+    if (!token) {
+      showAuthMessage("Please log in before signing up.", "error");
+      return;
+    }
+
     const email = document.getElementById("email").value;
     const activity = document.getElementById("activity").value;
 
@@ -124,6 +192,7 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/signup?email=${encodeURIComponent(email)}`,
         {
           method: "POST",
+          headers: getAuthHeaders()
         }
       );
 
@@ -137,6 +206,10 @@ document.addEventListener("DOMContentLoaded", () => {
         // Refresh activities list to show updated participants
         fetchActivities();
       } else {
+        if (response.status === 401 || response.status === 403) {
+          clearAuthState();
+          showAuthMessage("Authentication failed. Please log in again.", "error");
+        }
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
       }
@@ -155,6 +228,62 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  async function handleLogin(event) {
+    event.preventDefault();
+
+    const email = loginEmailInput.value;
+    const password = loginPasswordInput.value;
+
+    try {
+      const response = await fetch("/login", {
+        method: "POST",
+        headers: getAuthHeaders(true),
+        body: JSON.stringify({ email, password })
+      });
+
+      const result = await response.json();
+      if (response.ok) {
+        token = result.access_token;
+        localStorage.setItem(tokenKey, token);
+        localStorage.setItem(userEmailKey, result.email);
+        loginForm.reset();
+        updateAuthUI();
+        showAuthMessage(`Logged in as ${result.email}`, "success");
+        fetchActivities();
+      } else {
+        showAuthMessage(result.detail || "Login failed", "error");
+      }
+    } catch (error) {
+      showAuthMessage("Unable to log in. Please try again.", "error");
+      console.error("Login error:", error);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      const response = await fetch("/logout", {
+        method: "POST",
+        headers: getAuthHeaders()
+      });
+
+      if (response.ok) {
+        clearAuthState();
+        showAuthMessage("Logged out successfully.", "success");
+      } else {
+        clearAuthState();
+        showAuthMessage("Logged out locally.", "info");
+      }
+    } catch (error) {
+      clearAuthState();
+      showAuthMessage("Logged out locally.", "info");
+      console.error("Logout error:", error);
+    }
+  }
+
+  loginForm.addEventListener("submit", handleLogin);
+  logoutBtn.addEventListener("click", handleLogout);
+
   // Initialize app
+  updateAuthUI();
   fetchActivities();
 });
