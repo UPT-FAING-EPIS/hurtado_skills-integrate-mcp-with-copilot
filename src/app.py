@@ -5,10 +5,13 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 import os
+import secrets
 from pathlib import Path
 
 app = FastAPI(title="Mergington High School API",
@@ -18,6 +21,58 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+security = HTTPBearer()
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+users = {
+    "michael@mergington.edu": {"name": "Michael", "password": "chess123"},
+    "emma@mergington.edu": {"name": "Emma", "password": "code2026"},
+    "olivia@mergington.edu": {"name": "Olivia", "password": "gympass"}
+}
+
+active_tokens = {}
+
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    email = active_tokens.get(token)
+    if not email or email not in users:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid or expired authentication token")
+    return {"email": email, "name": users[email]["name"], "token": token}
+
+
+@app.post("/login")
+def login(credentials: LoginRequest):
+    user = users.get(credentials.email)
+    if not user or user["password"] != credentials.password:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid email or password")
+
+    token = secrets.token_urlsafe(16)
+    active_tokens[token] = credentials.email
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "email": credentials.email,
+        "name": user["name"]
+    }
+
+
+@app.post("/logout")
+def logout(current_user=Depends(get_current_user)):
+    active_tokens.pop(current_user["token"], None)
+    return {"message": "Logged out successfully"}
+
+
+@app.get("/me")
+def read_current_user(current_user=Depends(get_current_user)):
+    return current_user
+
 
 # In-memory activity database
 activities = {
@@ -89,8 +144,12 @@ def get_activities():
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
+def signup_for_activity(activity_name: str, email: str, current_user=Depends(get_current_user)):
     """Sign up a student for an activity"""
+    if email != current_user["email"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You may only sign up yourself")
+
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -105,14 +164,25 @@ def signup_for_activity(activity_name: str, email: str):
             detail="Student is already signed up"
         )
 
+    # Validate capacity
+    if len(activity["participants"]) >= activity["max_participants"]:
+        raise HTTPException(
+            status_code=400,
+            detail="This activity is already full"
+        )
+
     # Add student
     activity["participants"].append(email)
     return {"message": f"Signed up {email} for {activity_name}"}
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
+def unregister_from_activity(activity_name: str, email: str, current_user=Depends(get_current_user)):
     """Unregister a student from an activity"""
+    if email != current_user["email"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="You may only unregister yourself")
+
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
